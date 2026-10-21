@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 export type { TeamMember, TeamRole } from './store';
 export { mockTeam } from './store';
 
-const TEAM_ERROR = {
+export const TEAM_ERROR = {
   UNAUTHORIZED: 'unauthorized',
   FORBIDDEN: 'forbidden',
   INVALID_MEMBER: 'invalid_member',
@@ -15,7 +15,7 @@ const TEAM_ERROR = {
   BACKEND_UNAVAILABLE: 'backend_unavailable',
 } as const;
 
-type TeamErrorCode = (typeof TEAM_ERROR)[keyof typeof TEAM_ERROR];
+export type TeamErrorCode = (typeof TEAM_ERROR)[keyof typeof TEAM_ERROR];
 
 
 function isMockAllowed(): boolean {

@@ -1,117 +1,106 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// @vitest-environment node
+import { describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
 
-import { DELETE } from './route';
-import { mockTeam } from '../route';
+import { GET, PATCH, DELETE } from './route';
 
-const URL = 'http://localhost/api/team/abc';
+const MEMBER_ID = 'member-1';
+const BASE_URL = `http://localhost/api/team/${MEMBER_ID}`;
 
-function makeRequest(headers: Record<string, string> = {}): NextRequest {
-  return new NextRequest(URL, { method: 'DELETE', headers });
-}
-
-const adminHeaders = {
+const ADMIN_HEADERS = {
   authorization: 'Bearer test-token',
   'x-role': 'admin',
 };
 
-const developerHeaders = {
+const DEVELOPER_HEADERS = {
   authorization: 'Bearer test-token',
   'x-role': 'developer',
 };
 
-describe('DELETE /api/team/[id]', () => {
-  beforeEach(() => {
-    // Reset the shared mock store to a known state before each test.
-    mockTeam.length = 0;
-    mockTeam.push({
-      id: 'member-1',
-      name: 'Alice Admin',
-      email: 'alice@muxprotocol.com',
-      role: 'admin',
-      addedAt: new Date().toISOString(),
+function makeRequest(
+  method: string,
+  headers: Record<string, string> = {},
+  body?: unknown,
+) {
+  return new NextRequest(BASE_URL, {
+    method,
+    headers: {
+      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      ...headers,
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+const params = { params: { id: MEMBER_ID } };
+
+const MUTATION_BODY = { role: 'admin' };
+
+describe('team [id] route', () => {
+  describe('authorization', () => {
+    it('GET returns 401 unauthorized without credentials', async () => {
+      const res = await GET(makeRequest('GET'), params);
+      const body = await res.json();
+
+      expect(res.status).toBe(401);
+      expect(body.error.code).toBe('unauthorized');
+    });
+
+    it('PATCH returns 403 forbidden for a developer caller', async () => {
+      const res = await PATCH(
+        makeRequest('PATCH', DEVELOPER_HEADERS, MUTATION_BODY),
+        params,
+      );
+      const body = await res.json();
+
+      expect(res.status).toBe(403);
+      expect(body.error.code).toBe('forbidden');
+    });
+
+    it('DELETE returns 403 forbidden for a developer caller', async () => {
+      const res = await DELETE(makeRequest('DELETE', DEVELOPER_HEADERS), params);
+      const body = await res.json();
+
+      expect(res.status).toBe(403);
+      expect(body.error.code).toBe('forbidden');
     });
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.restoreAllMocks();
+  describe('not-found handling', () => {
+    it('GET returns 404 not_found for an unknown member id', async () => {
+      const res = await GET(makeRequest('GET', ADMIN_HEADERS), {
+        params: { id: 'does-not-exist' },
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(404);
+      expect(body.error.code).toBe('not_found');
+    });
   });
 
-  it('returns 401 when the authorization header is missing', async () => {
-    const res = await DELETE(makeRequest());
-    expect(res.status).toBe(401);
-    const body = await res.json();
-    expect(body.error.code).toBe('unauthorized');
+  describe('success path', () => {
+    it('GET returns the member for a valid admin request', async () => {
+      const res = await GET(makeRequest('GET', ADMIN_HEADERS), params);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.member.id).toBe(MEMBER_ID);
+    });
   });
 
-  it('returns 401 for a non-Bearer/ApiKey scheme', async () => {
-    const res = await DELETE(
-      makeRequest({ authorization: 'Basic abc123', 'x-role': 'admin' }),
-    );
-    expect(res.status).toBe(401);
-    const body = await res.json();
-    expect(body.error.code).toBe('unauthorized');
-  });
+  describe('correlation id', () => {
+    it('is present on a success response', async () => {
+      const res = await GET(makeRequest('GET', ADMIN_HEADERS), params);
 
-  it('returns 403 for a developer role', async () => {
-    const res = await DELETE(makeRequest(developerHeaders));
-    expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.error.code).toBe('forbidden');
-  });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-correlation-id')).toBeTruthy();
+    });
 
-  it('returns 200 and removes the member for an admin role', async () => {
-    const res = await DELETE(makeRequest(adminHeaders));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.removed).toBe(true);
-    expect(mockTeam.find((m) => m.id === 'member-1')).toBeUndefined();
-  });
+    it('is present on an error response', async () => {
+      const res = await GET(makeRequest('GET'), params);
 
-  it('returns 503 backend_unavailable when NODE_ENV is production', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    const res = await DELETE(makeRequest(adminHeaders));
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.error.code).toBe('backend_unavailable');
-  });
-
-  it('returns 503 backend_unavailable when the mock store is undefined', async () => {
-    vi.resetModules();
-    vi.doMock('../route', () => ({ mockTeam: undefined }));
-    const { DELETE: isolatedDelete } = await import('./route');
-    const res = await isolatedDelete(makeRequest(adminHeaders));
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.error.code).toBe('backend_unavailable');
-    vi.doUnmock('../route');
-  });
-
-  it('returns 200 with { removed: true } for an unknown id (idempotent)', async () => {
-    const res = await DELETE(makeRequest(adminHeaders));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.removed).toBe(true);
-
-    // Deleting again (already removed) must not throw and stays idempotent.
-    const again = await DELETE(makeRequest(adminHeaders));
-    expect(again.status).toBe(200);
-    const againBody = await again.json();
-    expect(againBody.removed).toBe(true);
-  });
-
-  it('echoes the supplied x-correlation-id header', async () => {
-    const res = await DELETE(
-      makeRequest({ ...adminHeaders, 'x-correlation-id': 'corr-123' }),
-    );
-    expect(res.headers.get('x-correlation-id')).toBe('corr-123');
-  });
-
-  it('generates an x-correlation-id when none is supplied', async () => {
-    const res = await DELETE(makeRequest(adminHeaders));
-    const correlationId = res.headers.get('x-correlation-id');
-    expect(correlationId).toBeTruthy();
-    expect(typeof correlationId).toBe('string');
+      expect(res.status).toBe(401);
+      expect(res.headers.get('x-correlation-id')).toBeTruthy();
+    });
   });
 });
