@@ -5,6 +5,11 @@
  * state-changing request the client must also echo a non-HttpOnly CSRF token
  * cookie in the `x-csrf-token` header. The server compares both values and
  * fails closed on any mismatch. See docs/security-ux-guards.md#csrf-strategy.
+ *
+ * Normalization rule: the double-submit comparison uses the raw, undecoded
+ * cookie value against the header value verbatim. Neither side is
+ * percent-decoded, so a cookie/header pair that differs only by URL-encoding
+ * is rejected symmetrically. Malformed cookies are treated as absent.
  */
 
 export const CSRF_COOKIE_NAME = "mux_csrf";
@@ -20,6 +25,11 @@ export function isSafeMethod(method: string | undefined): boolean {
 	return SAFE_METHODS.has((method ?? "GET").toUpperCase());
 }
 
+/**
+ * Reads a cookie value verbatim (no percent-decoding). Returns `null` when the
+ * cookie is absent or empty. Decoding is intentionally skipped so the CSRF
+ * comparison is symmetric with the raw header token.
+ */
 export function readCookie(
 	cookieHeader: string | null | undefined,
 	name: string,
@@ -29,7 +39,7 @@ export function readCookie(
 		const [key, ...rest] = part.trim().split("=");
 		if (key === name) {
 			const value = rest.join("=");
-			return value ? decodeURIComponent(value) : null;
+			return value ? value : null;
 		}
 	}
 	return null;
