@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { SEND_GATE_CODES } from "@/lib/feature-flags/send-flows";
 
 /**
  * Shared contract for the feature-flagged send entrypoint (issue #803).
@@ -7,13 +8,15 @@ import { createHash } from "node:crypto";
  * shape, validation rules, and error codes stay in one place.
  */
 
-export const MAX_BODY_BYTES = 8 * 1024;
+export const MAX_BODY_BYTES = 4 * 1024;
 export const MAX_MEMO_BYTES = 28;
 
 export const WALLET_ID_RE = /^[A-Za-z0-9_-]{3,64}$/;
-export const DESTINATION_RE = /^[A-Z2-7]{56}$/;
+/** StrKey account (G…) or contract (C…) address: 56 base32 characters. */
+export const DESTINATION_RE = /^[GC][A-Z2-7]{55}$/;
 export const AMOUNT_RE = /^\d{1,18}(\.\d{1,7})?$/;
-export const ASSET_RE = /^[A-Za-z0-9]{1,12}$/;
+/** `native`, or `CODE:ISSUER` where the issuer is a StrKey address. */
+export const ASSET_RE = /^(native|[A-Za-z0-9]{1,12}:[GC][A-Z2-7]{55})$/;
 /**
  * Accepted `network` identifiers: a short, lowercase, well-formed slug such
  * as `testnet`, `mainnet`, or `futurenet`. Bounded to 3-32 characters so an
@@ -22,13 +25,18 @@ export const ASSET_RE = /^[A-Za-z0-9]{1,12}$/;
 export const NETWORK_RE = /^[a-z][a-z0-9-]{2,31}$/;
 
 export const SEND_ERROR_CODES = {
-	UNAUTHORIZED: "UNAUTHORIZED",
-	FORBIDDEN: "FORBIDDEN",
-	RATE_LIMITED: "RATE_LIMITED",
-	IDEMPOTENCY_KEY_REQUIRED: "IDEMPOTENCY_KEY_REQUIRED",
-	INVALID_INPUT: "INVALID_INPUT",
-	REQUEST_IN_PROGRESS: "REQUEST_IN_PROGRESS",
-	BACKEND_UNAVAILABLE: "BACKEND_UNAVAILABLE",
+	...SEND_GATE_CODES,
+	UNAUTHORIZED: "SEND_UNAUTHORIZED",
+	AUTH_EXPIRED: "SEND_AUTH_EXPIRED",
+	FORBIDDEN: "SEND_FORBIDDEN",
+	DELEGATE_REVOKED: "SEND_DELEGATE_REVOKED",
+	RATE_LIMITED: "SEND_RATE_LIMITED",
+	IDEMPOTENCY_KEY_REQUIRED: "SEND_IDEMPOTENCY_KEY_REQUIRED",
+	INVALID_INPUT: "SEND_INVALID_INPUT",
+	REQUEST_IN_PROGRESS: "SEND_REQUEST_IN_PROGRESS",
+	MAINTENANCE: "SEND_MAINTENANCE",
+	BACKEND_UNAVAILABLE: "SEND_BACKEND_UNAVAILABLE",
+	UPSTREAM_ERROR: "SEND_UPSTREAM_ERROR",
 } as const;
 
 export type SendErrorCode =
@@ -63,6 +71,15 @@ function memoByteLength(memo: string): number {
 export function parseSendBody(raw: unknown): SendRequestBody | null {
 	if (typeof raw !== "object" || raw === null) return null;
 	const input = raw as Record<string, unknown>;
+	const allowedKeys = new Set([
+		"walletId",
+		"destination",
+		"amount",
+		"asset",
+		"network",
+		"memo",
+	]);
+	if (Object.keys(input).some((key) => !allowedKeys.has(key))) return null;
 
 	const { walletId, destination, amount, asset, network, memo } = input;
 
@@ -72,7 +89,11 @@ export function parseSendBody(raw: unknown): SendRequestBody | null {
 	if (typeof destination !== "string" || !DESTINATION_RE.test(destination)) {
 		return null;
 	}
-	if (typeof amount !== "string" || !AMOUNT_RE.test(amount)) {
+	if (
+		typeof amount !== "string" ||
+		!AMOUNT_RE.test(amount) ||
+		Number(amount) <= 0
+	) {
 		return null;
 	}
 	if (typeof asset !== "string" || !ASSET_RE.test(asset)) {
@@ -82,7 +103,13 @@ export function parseSendBody(raw: unknown): SendRequestBody | null {
 		return null;
 	}
 
-	const body: SendRequestBody = { walletId, destination, amount, asset, network };
+	const body: SendRequestBody = {
+		walletId,
+		destination,
+		amount,
+		asset,
+		network,
+	};
 
 	if (memo !== undefined) {
 		if (typeof memo !== "string" || memoByteLength(memo) > MAX_MEMO_BYTES) {

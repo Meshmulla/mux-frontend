@@ -126,7 +126,8 @@ export function parseAuditPageParams(
 		if (limit < 1 || limit > MAX_AUDIT_PAGE_SIZE) return invalid("limit");
 	}
 
-	const cursor = params.get("cursor");
+	const rawCursor = params.get("cursor");
+	const cursor = rawCursor === "" ? null : rawCursor;
 	if (
 		cursor !== null &&
 		(cursor.length > MAX_CURSOR_LENGTH || !CURSOR_RE.test(cursor))
@@ -144,7 +145,7 @@ export function toAuditSearchParams(query: AuditPageQuery): URLSearchParams {
 		const value = query.filters[name];
 		if (value !== undefined) params.set(name, value);
 	}
-	if (query.cursor !== null) params.set("cursor", query.cursor);
+	if (query.cursor) params.set("cursor", query.cursor);
 	params.set("limit", String(query.limit));
 	return params;
 }

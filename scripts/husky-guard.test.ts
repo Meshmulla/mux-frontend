@@ -1,14 +1,24 @@
 import { execSync } from "child_process";
 import * as fs from "fs";
 import { readFileSync } from "fs";
+import * as os from "os";
+import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HuskyPreCommitGuard } from "./husky-guard";
 
-vi.mock("child_process", () => ({
-	execSync: vi.fn(),
-}));
+vi.mock("child_process", () => {
+	const execSync = vi.fn();
+	return { default: { execSync }, execSync };
+});
 
 const REPORT_PATH = ".husky/_guard-report.json";
+const tempDirs: string[] = [];
+
+function tempReportPath(): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "husky-guard-"));
+	tempDirs.push(dir);
+	return path.join(dir, "guard-report.json");
+}
 
 describe("HuskyPreCommitGuard", () => {
 	afterEach(() => {
@@ -16,6 +26,9 @@ describe("HuskyPreCommitGuard", () => {
 		vi.mocked(execSync).mockReset();
 		if (fs.existsSync(REPORT_PATH)) {
 			fs.rmSync(REPORT_PATH);
+		}
+		for (const dir of tempDirs.splice(0)) {
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
@@ -39,21 +52,35 @@ describe("HuskyPreCommitGuard", () => {
 		expect(report.passed).toBe(false);
 	});
 
-	it("does not write a report file when the guard is disabled", async () => {
-		vi.mocked(execSync).mockImplementation(() => Buffer.from(""));
-
+	it("does not write a report file when preCommit is disabled", async () => {
+		const reportPath = tempReportPath();
 		const guard = new HuskyPreCommitGuard({
 			enabled: false,
-			checks: ["lint"],
-			reportPath: REPORT_PATH,
+			reportPath,
 		});
 
-		// Call runGuard() directly (not preCommit()) -- the bug this guards
-		// against is that any caller reaching runGuard() still wrote a
-		// report, even when the guard is disabled.
-		await guard.runGuard();
+		expect(await guard.preCommit()).toBe(true);
+		expect(execSync).not.toHaveBeenCalled();
+		expect(fs.existsSync(reportPath)).toBe(false);
+	});
 
-		expect(fs.existsSync(REPORT_PATH)).toBe(false);
+	it("writes enabled and blocking settings for an enabled guard", async () => {
+		const reportPath = tempReportPath();
+		const guard = new HuskyPreCommitGuard({
+			enabled: true,
+			blockOnFailures: false,
+			checks: [],
+			reportPath,
+		});
+
+		expect(await guard.preCommit()).toBe(true);
+
+		const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+		expect(report).toMatchObject({
+			enabled: true,
+			blockOnFailures: false,
+			passed: true,
+		});
 	});
 
 	it("sets the report's passed flag to false when any executed check failed", async () => {
@@ -78,7 +105,10 @@ describe("HuskyPreCommitGuard", () => {
 	});
 
 	it("runs the vitest command for the test check", async () => {
-		const guard = new HuskyPreCommitGuard({ checks: ["test"], failFast: false });
+		const guard = new HuskyPreCommitGuard({
+			checks: ["test"],
+			failFast: false,
+		});
 		const [result] = await guard.runGuard();
 
 		expect(execSync).toHaveBeenCalledWith("npx vitest run", expect.anything());
@@ -86,7 +116,10 @@ describe("HuskyPreCommitGuard", () => {
 	});
 
 	it("runs the eslint command for the lint check", async () => {
-		const guard = new HuskyPreCommitGuard({ checks: ["lint"], failFast: false });
+		const guard = new HuskyPreCommitGuard({
+			checks: ["lint"],
+			failFast: false,
+		});
 		await guard.runGuard();
 
 		expect(execSync).toHaveBeenCalledWith(
@@ -96,10 +129,16 @@ describe("HuskyPreCommitGuard", () => {
 	});
 
 	it("runs the tsc command for the typecheck check", async () => {
-		const guard = new HuskyPreCommitGuard({ checks: ["typecheck"], failFast: false });
+		const guard = new HuskyPreCommitGuard({
+			checks: ["typecheck"],
+			failFast: false,
+		});
 		await guard.runGuard();
 
-		expect(execSync).toHaveBeenCalledWith("npx tsc --noEmit", expect.anything());
+		expect(execSync).toHaveBeenCalledWith(
+			"npx tsc --noEmit",
+			expect.anything(),
+		);
 	});
 
 	it("fails closed on an unknown check without invoking execSync", async () => {
@@ -115,7 +154,10 @@ describe("HuskyPreCommitGuard", () => {
 	});
 
 	it("never shells out to jest or audit-ci, which are not repo dependencies", () => {
-		const source = readFileSync(new URL("./husky-guard.ts", import.meta.url), "utf8");
+		const source = readFileSync(
+			path.join(process.cwd(), "scripts/husky-guard.ts"),
+			"utf8",
+		);
 
 		expect(source).not.toContain("jest");
 		expect(source).not.toContain("audit-ci");

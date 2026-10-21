@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { MOCK_AUDIT_ENTRIES } from "./mock-entries";
 import {
+	type AuditPaginationState,
 	auditPaginationReducer,
 	canLoadMore,
 	initialAuditPaginationState,
-	type AuditPaginationState,
 } from "./pagination-state";
-import { MOCK_AUDIT_ENTRIES } from "./mock-entries";
 
 const firstPage = MOCK_AUDIT_ENTRIES.slice(0, 3);
 const secondPage = MOCK_AUDIT_ENTRIES.slice(3, 6);
@@ -24,8 +24,11 @@ function readyState(
 
 describe("auditPaginationReducer", () => {
 	it("reset increments generation and restores initial fields", () => {
-		const state = readyState({ generation: 4, error: { kind: "failed", code: "network" } });
-		const next = auditPaginationReducer(state, { type: "reset", generation: 5 });
+		const state = readyState({
+			generation: 4,
+			error: { kind: "failed", code: "network" },
+		});
+		const next = auditPaginationReducer(state, { type: "reset" });
 
 		expect(next.generation).toBe(5);
 		expect(next.items).toEqual(initialAuditPaginationState.items);
@@ -39,8 +42,7 @@ describe("auditPaginationReducer", () => {
 		const next = auditPaginationReducer(state, {
 			type: "success",
 			generation: 1,
-			items: [...secondPage],
-			nextCursor: "cursor_2",
+			page: { items: [...secondPage], nextCursor: "cursor_2", hasMore: true },
 		});
 
 		expect(next).toBe(state);
@@ -51,8 +53,11 @@ describe("auditPaginationReducer", () => {
 		const next = auditPaginationReducer(state, {
 			type: "success",
 			generation: 1,
-			items: [firstPage[0], ...secondPage],
-			nextCursor: "cursor_2",
+			page: {
+				items: [firstPage[0], ...secondPage],
+				nextCursor: "cursor_2",
+				hasMore: true,
+			},
 		});
 
 		expect(next.items.map((entry) => entry.id)).toEqual([
@@ -67,8 +72,7 @@ describe("auditPaginationReducer", () => {
 		const next = auditPaginationReducer(state, {
 			type: "success",
 			generation: 1,
-			items: [...secondPage],
-			nextCursor: null,
+			page: { items: [...secondPage], nextCursor: null, hasMore: false },
 		});
 
 		expect(next.status).toBe("exhausted");
@@ -81,7 +85,7 @@ describe("auditPaginationReducer", () => {
 		const next = auditPaginationReducer(state, {
 			type: "failure",
 			generation: 1,
-			error: { kind: "failed", code: "invalid_cursor" },
+			error: { kind: "failed", code: "invalid_cursor", correlationId: null },
 		});
 
 		expect(next.nextCursor).toBeNull();
@@ -93,11 +97,15 @@ describe("auditPaginationReducer", () => {
 		const next = auditPaginationReducer(state, {
 			type: "failure",
 			generation: 1,
-			error: { kind: "failed", code: "network" },
+			error: { kind: "failed", code: "network", correlationId: null },
 		});
 
 		expect(next.nextCursor).toBe("cursor_1");
-		expect(next.error).toEqual({ kind: "failed", code: "network" });
+		expect(next.error).toEqual({
+			kind: "failed",
+			code: "network",
+			correlationId: null,
+		});
 	});
 });
 
@@ -107,7 +115,9 @@ describe("canLoadMore", () => {
 	});
 
 	it("is false when exhausted", () => {
-		expect(canLoadMore(readyState({ status: "exhausted", nextCursor: null }))).toBe(false);
+		expect(
+			canLoadMore(readyState({ status: "exhausted", nextCursor: null })),
+		).toBe(false);
 	});
 
 	it("is true when ready with a cursor", () => {

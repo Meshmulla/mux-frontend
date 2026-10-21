@@ -22,16 +22,27 @@ function newCorrelationId(): string {
 
 // Emails are partially masked; secrets are replaced entirely.
 export function redactEmail(email: string): string {
-	const [user, domain] = email.split("@");
-	if (!user || !domain) return "[redacted]";
-	return `${user[0]}***@${domain}`;
+	const separator = email.indexOf("@");
+	if (
+		separator <= 0 ||
+		separator === email.length - 1 ||
+		email.indexOf("@", separator + 1) !== -1
+	) {
+		return "[redacted]";
+	}
+	return `${email[0]}***@[redacted-domain]`;
 }
 
 function log(event: string, fields: Record<string, string | number>) {
 	console.info(JSON.stringify({ event, ...fields }));
 }
 
-function errorResponse(status: number, code: string, message: string, correlationId: string) {
+function errorResponse(
+	status: number,
+	code: string,
+	message: string,
+	correlationId: string,
+) {
 	return NextResponse.json(
 		{ error: { code, message, correlationId } },
 		{ status, headers: { [CORRELATION_ID_HEADER]: correlationId } },
@@ -43,7 +54,8 @@ function parseBody(raw: unknown): LoginBody | null {
 	const { email, password } = raw as Record<string, unknown>;
 	if (typeof email !== "string" || typeof password !== "string") return null;
 	if (!email.includes("@") || password.length === 0) return null;
-	if (email.length > MAX_FIELD_LENGTH || password.length > MAX_FIELD_LENGTH) return null;
+	if (email.length > MAX_FIELD_LENGTH || password.length > MAX_FIELD_LENGTH)
+		return null;
 	return { email: email.trim().toLowerCase(), password };
 }
 
@@ -71,8 +83,16 @@ export async function POST(request: Request) {
 		body = null;
 	}
 	if (!body) {
-		log("auth.login.rejected", { correlationId, code: ERROR_CODES.INVALID_BODY });
-		return errorResponse(400, ERROR_CODES.INVALID_BODY, "Email and password are required.", correlationId);
+		log("auth.login.rejected", {
+			correlationId,
+			code: ERROR_CODES.INVALID_BODY,
+		});
+		return errorResponse(
+			400,
+			ERROR_CODES.INVALID_BODY,
+			"Email and password are required.",
+			correlationId,
+		);
 	}
 
 	let token: string | null;
@@ -80,8 +100,16 @@ export async function POST(request: Request) {
 		token = await authenticate(body);
 	} catch {
 		// Fail closed: never fall back to a session when the upstream is down.
-		log("auth.login.upstream_error", { correlationId, code: ERROR_CODES.UPSTREAM_UNAVAILABLE });
-		return errorResponse(503, ERROR_CODES.UPSTREAM_UNAVAILABLE, "Sign-in is temporarily unavailable.", correlationId);
+		log("auth.login.upstream_error", {
+			correlationId,
+			code: ERROR_CODES.UPSTREAM_UNAVAILABLE,
+		});
+		return errorResponse(
+			503,
+			ERROR_CODES.UPSTREAM_UNAVAILABLE,
+			"Sign-in is temporarily unavailable.",
+			correlationId,
+		);
 	}
 
 	if (!token) {
@@ -90,10 +118,18 @@ export async function POST(request: Request) {
 			code: ERROR_CODES.INVALID_CREDENTIALS,
 			email: redactEmail(body.email),
 		});
-		return errorResponse(401, ERROR_CODES.INVALID_CREDENTIALS, "Invalid email or password.", correlationId);
+		return errorResponse(
+			401,
+			ERROR_CODES.INVALID_CREDENTIALS,
+			"Invalid email or password.",
+			correlationId,
+		);
 	}
 
-	log("auth.login.succeeded", { correlationId, email: redactEmail(body.email) });
+	log("auth.login.succeeded", {
+		correlationId,
+		email: redactEmail(body.email),
+	});
 	const response = NextResponse.json(
 		{ ok: true, correlationId },
 		{ headers: { [CORRELATION_ID_HEADER]: correlationId } },

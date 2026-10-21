@@ -7150,7 +7150,7 @@ snapshots:
       - debug
       - supports-color
 
-  '@storybook/addon-a11y@10.4.6(storybook@10.4.6(@testing-library/dom@10.4.1)(@types/react@19.2.17)(react@19.2.3))':
+  '@storybook/addon-a11y@10.4.6(storybook@10.4.6(@testing-library/dom@10.4.0)(@types/react@19.2.17)(react@19.2.3))':
     dependencies:
       '@storybook/global': 5.0.0
       axe-core: 4.12.0

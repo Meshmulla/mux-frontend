@@ -1,5 +1,3 @@
-import { configuredNetwork } from "@/lib/http/backend-url";
-
 /**
  * Feature-flagged send flows (issue #803).
  *
@@ -74,7 +72,7 @@ export function readServerSendFlowFlags(env: Env = process.env): SendFlowFlags {
 		enabled: parseOptInFlag(env.MUX_SEND_FLOWS_ENABLED),
 		killSwitch: parseKillSwitch(env.MUX_SEND_KILL_SWITCH),
 		mainnetEnabled: parseOptInFlag(env.MUX_SEND_MAINNET_ENABLED),
-		network: parseNetwork(configuredNetwork(env) ?? undefined),
+		network: parseNetwork(env.MUX_STELLAR_NETWORK),
 	};
 }
 

@@ -14,7 +14,6 @@ import {
 	forwardCredentialHeaders,
 	hasCredential,
 	isCsrfSafe,
-	resolveCredentialSubject,
 } from "@/lib/http/credentials";
 import {
 	classifyServiceUnavailable,
@@ -55,6 +54,26 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const UPSTREAM_TIMEOUT_MS = 15_000;
+
+/**
+ * Longest planned-maintenance wait surfaced to the caller. Upstream may ask
+ * for days; anything over an hour is clamped so the client shows a bounded
+ * countdown instead of an unbounded outage window.
+ */
+const MAX_MAINTENANCE_RETRY_AFTER_SECONDS = 3_600;
+
+function maintenanceRetryAfterSeconds(
+	upstream: Response,
+	fallbackMs: number,
+): string {
+	const raw = upstream.headers.get("retry-after")?.trim() ?? "";
+	const seconds = /^\d{1,7}$/.test(raw)
+		? Number(raw)
+		: Math.ceil(fallbackMs / 1000);
+	return String(
+		Math.min(MAX_MAINTENANCE_RETRY_AFTER_SECONDS, Math.max(1, seconds)),
+	);
+}
 
 /**
  * Maximum number of in-flight/replay keys retained on this instance. The set
@@ -146,10 +165,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 		);
 	}
 
-	// Key the limiter on the verified subject so a caller cannot rotate a
-	// spoofable header to obtain a fresh window on every request.
-	const subject = resolveCredentialSubject(request);
-	const rateKey = callerKey(request, subject);
+	const rateKey = callerKey(request);
 	const decision = limiter.check(rateKey);
 	if (!decision.allowed) {
 		return errorResponse(
@@ -333,14 +349,24 @@ export async function POST(request: Request): Promise<NextResponse> {
 			);
 		}
 
-		const unavailable = classifyServiceUnavailable(upstream.status);
+		const unavailable = classifyServiceUnavailable(upstream, upstreamBody);
 		if (unavailable !== null) {
 			return errorResponse(
 				503,
-				SERVICE_UNAVAILABLE_CODES[unavailable],
+				unavailable.code === SERVICE_UNAVAILABLE_CODES.MAINTENANCE
+					? SEND_ERROR_CODES.MAINTENANCE
+					: SEND_ERROR_CODES.BACKEND_UNAVAILABLE,
 				"Sending is temporarily unavailable.",
 				correlationId,
-				{ [MAINTENANCE_HEADER]: unavailable },
+				{
+					[MAINTENANCE_HEADER]: String(
+						unavailable.code === SERVICE_UNAVAILABLE_CODES.MAINTENANCE,
+					),
+					"retry-after": maintenanceRetryAfterSeconds(
+						upstream,
+						unavailable.retryAfterMs,
+					),
+				},
 				gate.network,
 			);
 		}

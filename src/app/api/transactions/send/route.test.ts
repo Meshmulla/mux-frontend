@@ -255,39 +255,40 @@ describe("POST /api/transactions/send — fail closed", () => {
 	});
 });
 
-describe("POST /api/transactions/send — idempotency replay state", () => {
-	it("treats a key within the cap as a replay without re-invoking upstream", async () => {
+describe("POST /api/transactions/send — in-flight idempotency", () => {
+	it("releases the key after an upstream failure so a retry can succeed", async () => {
+		upstream.mockRejectedValueOnce(new TypeError("fetch failed"));
 		const POST = await loadPost();
 		const first = await POST(sendRequest());
-		expect(first.status).toBe(201);
+		expect(first.status).toBe(503);
 		expect(upstream).toHaveBeenCalledTimes(1);
 
-		const replay = await POST(sendRequest());
-		expect(replay.status).toBe(201);
-		expect(upstream).toHaveBeenCalledTimes(1);
+		const retry = await POST(sendRequest());
+		expect(retry.status).toBe(201);
+		expect(upstream).toHaveBeenCalledTimes(2);
 	});
 
-	it("evicts the earliest key once the cap is exceeded and forwards it again", async () => {
-		const POST = await loadPost();
-		const firstKey = "idem_0000000000000000";
-
-		const first = await POST(
-			sendRequest(VALID_BODY, { "idempotency-key": firstKey }),
+	it("rejects a duplicate while the first request is still in flight", async () => {
+		let resolveUpstream: ((response: Response) => void) | undefined;
+		upstream.mockImplementationOnce(
+			() =>
+				new Promise<Response>((resolve) => {
+					resolveUpstream = resolve;
+				}),
 		);
-		expect(first.status).toBe(201);
+		const POST = await loadPost();
+		const firstPromise = POST(sendRequest());
+		await vi.waitFor(() => expect(upstream).toHaveBeenCalledTimes(1));
+
+		const duplicate = await POST(sendRequest());
+		expect(duplicate.status).toBe(409);
+		expect(await errorCode(duplicate)).toBe("SEND_REQUEST_IN_PROGRESS");
 		expect(upstream).toHaveBeenCalledTimes(1);
 
-		// Insert more than the cap of distinct keys to force eviction of firstKey.
-		for (let i = 0; i < 1_001; i += 1) {
-			const key = `idem_${i.toString(16).padStart(16, "0")}`;
-			await POST(sendRequest(VALID_BODY, { "idempotency-key": key }));
-		}
-
-		const callsBefore = upstream.mock.calls.length;
-		const again = await POST(
-			sendRequest(VALID_BODY, { "idempotency-key": firstKey }),
+		if (!resolveUpstream) throw new Error("upstream request did not start");
+		resolveUpstream(
+			Response.json({ id: "tx_1", status: "pending" }, { status: 201 }),
 		);
-		expect(again.status).toBe(201);
-		expect(upstream.mock.calls.length).toBe(callsBefore + 1);
+		expect((await firstPromise).status).toBe(201);
 	});
 });

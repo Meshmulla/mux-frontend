@@ -1,10 +1,72 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 
-export interface BalanceRefreshState<T> {
-  balance: T | null;
-  refreshing: boolean;
-  error: Error | null;
-  refresh: () => Promise<void>;
+// Stale-while-revalidate balance state: a refresh keeps the last known balance
+// on screen (no flicker to a skeleton/zero) and out-of-order responses are
+// dropped so an older request can never overwrite a newer balance.
+
+export const BALANCE_REFRESH_FAILED = "BALANCE_REFRESH_FAILED";
+
+export type BalanceState = {
+	balance: number | null;
+	refreshing: boolean;
+	error: string | null;
+	requestId: number;
+	/** Last stable (non-refreshing) state, so a stale response is a true no-op. */
+	lastStable?: BalanceState;
+};
+
+export type BalanceAction =
+	| { type: "start"; requestId: number }
+	| { type: "success"; requestId: number; balance: number }
+	| { type: "failure"; requestId: number; error?: string };
+
+export const initialBalanceState: BalanceState = {
+	balance: null,
+	refreshing: false,
+	error: null,
+	requestId: 0,
+};
+
+export function balanceReducer(
+	state: BalanceState,
+	action: BalanceAction,
+): BalanceState {
+	switch (action.type) {
+		case "start":
+			return {
+				...state,
+				refreshing: true,
+				requestId: action.requestId,
+				lastStable: state.refreshing ? (state.lastStable ?? state) : state,
+			};
+		case "success":
+			if (action.requestId !== state.requestId) {
+				return state;
+			}
+			return {
+				...state,
+				balance: action.balance,
+				refreshing: false,
+				error: null,
+			};
+		case "failure":
+			// Keep the last known balance; surface the error without blanking it.
+			if (action.requestId !== state.requestId) {
+				return state.lastStable ?? state;
+			}
+			return {
+				...state,
+				refreshing: false,
+				error: action.error ?? BALANCE_REFRESH_FAILED,
+			};
+	}
+}
+
+export interface BalanceRefreshState {
+	balance: number | null;
+	refreshing: boolean;
+	error: string | null;
+	refresh: () => Promise<void>;
 }
 
 /**
@@ -16,39 +78,30 @@ export interface BalanceRefreshState<T> {
  * inline arrow callback will not cause a fetch per render. The mount effect
  * runs once; subsequent fetches happen only when `refresh` is called.
  */
-export function useBalanceRefresh<T>(
-  fetchBalance: () => Promise<T>,
-): BalanceRefreshState<T> {
-  const [balance, setBalance] = useState<T | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+export function useBalanceRefresh(
+	fetchBalance: () => Promise<number>,
+): BalanceRefreshState {
+	const [state, dispatch] = useReducer(balanceReducer, initialBalanceState);
 
-  const fetchRef = useRef(fetchBalance);
-  fetchRef.current = fetchBalance;
+	const fetchRef = useRef(fetchBalance);
+	fetchRef.current = fetchBalance;
 
-  const requestIdRef = useRef(0);
+	const counter = useRef(0);
 
-  const refresh = useCallback(async () => {
-    const requestId = ++requestIdRef.current;
-    setRefreshing(true);
-    try {
-      const next = await fetchRef.current();
-      if (requestId !== requestIdRef.current) return;
-      setBalance(next);
-      setError(null);
-    } catch (err) {
-      if (requestId !== requestIdRef.current) return;
-      setError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setRefreshing(false);
-      }
-    }
-  }, []);
+	const refresh = useCallback(async () => {
+		const requestId = ++counter.current;
+		dispatch({ type: "start", requestId });
+		try {
+			const balance = await fetchRef.current();
+			dispatch({ type: "success", requestId, balance });
+		} catch {
+			dispatch({ type: "failure", requestId, error: BALANCE_REFRESH_FAILED });
+		}
+	}, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
 
-  return { balance, refreshing, error, refresh };
+	return { ...state, refresh };
 }
